@@ -1,0 +1,58 @@
+# Lint, test and scan on every push, then run the offline demo and keep its report.
+name: ci
+
+on:
+  push:
+  schedule:
+    - cron: "41 6 * * 1" # weekly re-scan for newly published CVEs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.13.6"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  test:
+    name: Lint, test and scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Ruff
+        run: |
+          uv run ruff check --output-format=github .
+          uv run ruff format --check .
+      - name: Tests (coverage gate 85%)
+        run: uv run pytest --cov
+      - name: Bandit
+        run: uv run bandit -q -r src -ll
+      - name: pip-audit
+        run: |
+          uv export --locked --no-dev --no-emit-project --no-header --quiet -o /tmp/requirements.txt
+          uv run pip-audit --disable-pip --strict -r /tmp/requirements.txt
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Offline demo (no API key needed)
+        run: uv run iot-agent demo --offline --out reports
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: incident-report
+          path: reports/
